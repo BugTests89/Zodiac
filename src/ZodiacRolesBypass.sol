@@ -81,12 +81,29 @@ contract ZodiacRolesBypass {
             bytes32(uint256(0)) // dynamic part length = 0
         );
 
-        // Safe.checkSignatures requires signatures.length >= threshold * 65
-        // BEFORE the loop. Entry #0 reverts with magic immediately, so the
-        // remaining bytes are never read; we only pad to satisfy the length.
-        uint256 minLen = safeThreshold * 65;
+        // ─────────────────────────────────────────────────────────────────
+        // ⚠️ CRITICAL: Safe.checkSignatures enforces
+        //      require(signatures.length >= threshold * 65, "GS021")
+        //
+        // The Roles modifier extracts a portion of the trailing calldata as
+        // the "signature" it forwards to the Safe. Empirically, that portion
+        // is shorter than the raw `innerSig` we build, because:
+        //   • the trailing material (salt, signer, offset, v) is parsed off
+        //   • ABI encoding of `bytes` inside `abi.encodePacked` adds its own
+        //     header word, and Roles slices at the boundary
+        //
+        // Fix: pad `innerSig` so its final length is at least
+        //        threshold * 65 + SAFETY_BUFFER
+        // which leaves a comfortable margin even after Roles' slicing.
+        // ─────────────────────────────────────────────────────────────────
+        uint256 SAFETY_BUFFER = 256; // covers Roles' extraction + ABI overhead
+        uint256 minLen = safeThreshold * 65 + SAFETY_BUFFER;
+
         if (innerSig.length < minLen) {
-            innerSig = abi.encodePacked(innerSig, new bytes(minLen - innerSig.length));
+            innerSig = abi.encodePacked(
+                innerSig,
+                new bytes(minLen - innerSig.length)
+            );
         }
 
         // ------------------------------------------------------------------
