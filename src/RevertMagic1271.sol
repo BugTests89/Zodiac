@@ -9,7 +9,7 @@ pragma solidity ^0.8.25;
  * @dev Why reverting works:
  *
  *   Zodiac Roles Modifier v2.1.0 / Delay Modifier v1.1.0
- *   (legacy @gnosis.pm/zodiac Modifier.sol -> SignatureChecker):
+ *   (legacy gnosis.pm/zodiac Modifier.sol -> SignatureChecker):
  *
  *       (, bytes memory returnData) = signer.staticcall(
  *           abi.encodeWithSelector(IERC1271.isValidSignature.selector, hash, signature)
