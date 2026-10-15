@@ -21,13 +21,13 @@ pragma solidity ^0.8.25;
  *   isValidSignature reverts with 0x1626ba7e is accepted as a valid signer.
  *
  *   In the real composition the Zodiac `signer` is a Safe that has the
- *   CompatibilityFallbackHandler. The handler forwards the validation to
+ *   ExtensibleFallbackHandler. The handler forwards the validation to
  *   Safe.checkSignatures, which staticcalls THIS contract as a contract
  *   signer (v == 0). Our revert-with-magic bubbles all the way back:
  *
  *     RevertMagic1271
  *       -> Safe.checkSignatures (reverts, payload = 0x1626ba7e)
- *         -> CompatibilityFallbackHandler.isValidSignature (propagates)
+ *         -> ExtensibleFallbackHandler.isValidSignature (propagates)
  *           -> Safe fallback / proxy fallback (propagates returndata)
  *             -> Zodiac _isValidContractSignature  => bytes4(returndata) == 0x1626ba7e => VALID
  *
