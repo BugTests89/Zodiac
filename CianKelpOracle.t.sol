@@ -73,7 +73,7 @@ contract CianKelpOracleTest is Test {
     // ---- CIAN addresses (confirmed from uploaded source / on-chain reads) ----
     address constant CIAN_VAULT = 0xd87a19fF681AE98BF10d2220D1AE3Fbd374ADE4e;
     address constant CIAN_MANAGER = 0xAc1894C6914639e18f8FA69FEBd324eE91c96065; // rebalancer
-    address constant STRATEGY_AAVEV3 = 0x21625ffc879de0ba9fc3206f9d9edfe74c4b0a71;
+    address constant STRATEGY_AAVEV3 = 0x21625Ffc879dE0Ba9FC3206f9D9eDFe74C4b0A71;
     address constant STRATEGY_COMPOUND = 0xB69ca6D2Fb435318800F267DD217d64Fa4BE137e;
     address constant D_WETH_AAVEV3 = 0xeA51d7853EEFb32b6ee06b1C12E6dcCA88Be0fFE; // Aave variable debt WETH
 
