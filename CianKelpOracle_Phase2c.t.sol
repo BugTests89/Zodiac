@@ -65,7 +65,7 @@ contract AtomicForwarder {
 contract CianKelpOracle_Phase2c_Test is Test {
     address constant CIAN_VAULT = 0xd87a19fF681AE98BF10d2220D1AE3Fbd374ADE4e;
     address constant CIAN_MANAGER = 0xAc1894C6914639e18f8FA69FEBd324eE91c96065;
-    address constant REDEEM_OPERATOR = 0x47dbd71db64617f6cbd45eb9d9ba876f40ed239e;
+    address constant REDEEM_OPERATOR = 0x47DBD71Db64617f6cBD45eB9D9Ba876F40ED239E;
     address constant KELP_DEPOSIT_POOL = 0x036676389e48133B63a802f8635AD39E752D375D;
     address constant KELP_ORACLE = 0x349A73444b1a310BAe67ef67973022020d70020d;
     address constant RSETH = 0xA1290d69c65A6Fe4DF752f95823fae25cB99e5A7;
