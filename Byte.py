@@ -17,7 +17,6 @@ from web3 import Web3
 from pyevmasm import disassemble_all
 
 # ---------------------------- التكوين ----------------------------
-# عناوين RPC العامة (يمكن استبدالها بعُقد خاصة)
 RPC_ENDPOINTS = {
     "ethereum": "https://ethereum-rpc.publicnode.com",
     "bsc": "https://bsc-dataseed.binance.org",
@@ -25,7 +24,6 @@ RPC_ENDPOINTS = {
     "base": "https://mainnet.base.org",
 }
 
-# معرفات chainId لـ Etherscan API
 ETHERSCAN_CHAIN_IDS = {
     "ethereum": 1,
     "bsc": 56,
@@ -33,12 +31,18 @@ ETHERSCAN_CHAIN_IDS = {
     "base": 8453,
 }
 
-# عتبة الإنتروبيا (بايت/بايت)
 ENTROPY_THRESHOLD = 7.0
-# الحد الأدنى لطول الكتلة عالية الإنتروبيا
 MIN_BLOB_LEN = 16
-# الحد الأدنى لطول السلسلة النصية
 MIN_STRING_LEN = 8
+
+# ثوابت معروفة يجب تجاهلها لتقليل الإنذارات الكاذبة
+KNOWN_CONSTANTS = {
+    # keccak256("Transfer(address,address,uint256)")
+    "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+    # keccak256("Approval(address,address,uint256)")
+    "8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925",
+}
+
 
 # ---------------------------- أدوات مساعدة ----------------------------
 def shannon_entropy(data: bytes) -> float:
@@ -72,10 +76,8 @@ def strip_cbor_metadata(bytecode: bytes) -> bytes:
     """
     if len(bytecode) < 2:
         return bytecode
-    # محاولة قراءة آخر بايتين كطول CBOR
     length = int.from_bytes(bytecode[-2:], "big")
     if 0 < length < len(bytecode) - 2:
-        # التحقق من أن البداية تحتوي على بادئة CBOR الشائعة (a1/a2/a3...)
         start = len(bytecode) - 2 - length
         if start >= 0:
             prefix = bytecode[start:start + 1]
@@ -84,19 +86,40 @@ def strip_cbor_metadata(bytecode: bytes) -> bytes:
     return bytecode
 
 
+def _operand_to_bytes(ins) -> Optional[bytes]:
+    """
+    تحويل operand الخاص بتعليمة PUSH إلى bytes بأمان.
+    pyevmasm قد يُرجع int (مثل PUSH0) أو bytes أو None.
+    """
+    op = ins.operand
+    if op is None:
+        return None
+    if isinstance(op, bytes):
+        return op if len(op) > 0 else None
+    if isinstance(op, int):
+        try:
+            size = int(ins.name.replace("PUSH", ""))
+        except ValueError:
+            return None
+        if size == 0:
+            return None
+        return op.to_bytes(size, byteorder="big")
+    return None
+
+
 # ---------------------------- جلب البيانات ----------------------------
 def fetch_creation_bytecode(address: str, chain: str, etherscan_key: Optional[str]) -> Optional[bytes]:
-    """
-    جلب creation bytecode.
-    الأولوية: الحصول على txHash من Etherscan ثم الحصول على input من RPC.
-    """
+    """جلب creation bytecode عبر Etherscan + RPC"""
     chain_id = ETHERSCAN_CHAIN_IDS.get(chain)
     if not chain_id or not etherscan_key:
         print("[!] تحذير: لم يتم توفير مفتاح Etherscan API، لا يمكن جلب creation bytecode", file=sys.stderr)
         return None
 
-    # 1. الحصول على txHash لإنشاء العقد
-    url = f"https://api.etherscan.io/v2/api?chainid={chain_id}&module=contract&action=getcontractcreation&contractaddresses={address}&apikey={etherscan_key}"
+    url = (
+        f"https://api.etherscan.io/v2/api?chainid={chain_id}"
+        f"&module=contract&action=getcontractcreation"
+        f"&contractaddresses={address}&apikey={etherscan_key}"
+    )
     try:
         resp = requests.get(url, timeout=15)
         data = resp.json()
@@ -111,7 +134,6 @@ def fetch_creation_bytecode(address: str, chain: str, etherscan_key: Optional[st
     tx_hash = data["result"][0]["txHash"]
     print(f"[*] معاملة الإنشاء: {tx_hash}")
 
-    # 2. الحصول على input للمعاملة من RPC
     w3 = Web3(Web3.HTTPProvider(RPC_ENDPOINTS[chain]))
     try:
         tx = w3.eth.get_transaction(tx_hash)
@@ -134,39 +156,40 @@ def fetch_runtime_bytecode(address: str, chain: str) -> bytes:
 
 # ---------------------------- التحليل الأساسي ----------------------------
 def extract_constructor_args(creation: bytes, runtime: bytes) -> Optional[bytes]:
-    """
-    استخراج معاملات المُنشئ بمقارنة اللاحقة.
-    إذا كانت creation أطول من runtime، فإن الجزء الإضافي في النهاية هو معاملات المُنشئ.
-    """
+    """استخراج معاملات المُنشئ بمقارنة اللاحقة"""
     if len(creation) <= len(runtime):
         return None
-    # التحقق من أن runtime هي بادئة creation
     if creation[:len(runtime)] == runtime:
         args = creation[len(runtime):]
         print(f"[*] تم اكتشاف {len(args)} بايت من معاملات المُنشئ المحتملة")
         return args
-    else:
-        # قد تحتوي creation على بيانات وصفية، جرب البحث عن أطول بادئة مشتركة
-        # إستراتيجية مبسطة: العثور على أطول بادئة مشتركة
-        for i in range(min(len(creation), len(runtime)), 0, -1):
-            if creation[:i] == runtime[:i]:
-                args = creation[i:]
-                if args:
-                    print(f"[*] تم اكتشاف {len(args)} بايت من معاملات المُنشئ المحتملة (طريقة البادئة المشتركة)")
-                    return args
-                break
+
+    # محاولة إزالة CBOR من runtime قبل المقارنة
+    runtime_no_cbor = strip_cbor_metadata(runtime)
+    if creation[:len(runtime_no_cbor)] == runtime_no_cbor:
+        args = creation[len(runtime_no_cbor):]
+        if args:
+            print(f"[*] تم اكتشاف {len(args)} بايت من معاملات المُنشئ (بعد إزالة CBOR)")
+            return args
+
+    # طريقة البادئة المشتركة
+    for i in range(min(len(creation), len(runtime)), 0, -1):
+        if creation[:i] == runtime[:i]:
+            args = creation[i:]
+            if args:
+                print(f"[*] تم اكتشاف {len(args)} بايت من معاملات المُنشئ (طريقة البادئة المشتركة)")
+                return args
+            break
     return None
 
 
 def analyze_runtime(runtime: bytes, source: str = "runtime"):
     """تحليل runtime bytecode: التفكيك، الإنتروبيا، السلاسل النصية"""
     findings = []
-    # إزالة CBOR
     cleaned = strip_cbor_metadata(runtime)
     if len(cleaned) < len(runtime):
         print(f"[*] تمت إزالة {len(runtime) - len(cleaned)} بايت من بيانات CBOR الوصفية")
 
-    # التفكيك
     try:
         instructions = list(disassemble_all(cleaned))
     except Exception as e:
@@ -176,33 +199,39 @@ def analyze_runtime(runtime: bytes, source: str = "runtime"):
     print(f"[*] تم تفكيك {len(instructions)} تعليمة")
 
     for ins in instructions:
-        if ins.name.startswith("PUSH"):
-            data = ins.operand
-            if not data:
-                continue
-            offset = ins.pc
+        if not ins.name.startswith("PUSH"):
+            continue
 
-            # 1. اكتشاف السلاسل النصية
-            if is_printable_ascii(data):
-                findings.append({
-                    "type": "string",
-                    "offset": hex(offset),
-                    "length": len(data),
-                    "value": data.decode("ascii", errors="replace"),
-                    "source": source,
-                    "instruction": ins.name,
-                })
+        data = _operand_to_bytes(ins)
+        if not data:
+            continue
 
-            # 2. اكتشاف الإنتروبيا العالية
-            if len(data) >= MIN_BLOB_LEN:
-                h = shannon_entropy(data)
-                if h >= ENTROPY_THRESHOLD:
+        offset = ins.pc
+
+        # 1. اكتشاف السلاسل النصية
+        if is_printable_ascii(data):
+            findings.append({
+                "type": "string",
+                "offset": hex(offset),
+                "length": len(data),
+                "value": data.decode("ascii", errors="replace"),
+                "source": source,
+                "instruction": ins.name,
+            })
+
+        # 2. اكتشاف الإنتروبيا العالية
+        if len(data) >= MIN_BLOB_LEN:
+            h = shannon_entropy(data)
+            if h >= ENTROPY_THRESHOLD:
+                hex_str = data.hex()
+                # تجاهل الثوابت المعروفة
+                if hex_str not in KNOWN_CONSTANTS and not hex_str.startswith("ddf252ad"):
                     findings.append({
                         "type": "high_entropy",
                         "offset": hex(offset),
                         "length": len(data),
                         "entropy": round(h, 4),
-                        "hex_preview": data[:16].hex() + "..." if len(data) > 16 else data.hex(),
+                        "hex_preview": data[:16].hex() + "..." if len(data) > 16 else hex_str,
                         "source": source,
                         "instruction": ins.name,
                     })
@@ -211,12 +240,11 @@ def analyze_runtime(runtime: bytes, source: str = "runtime"):
 
 
 def analyze_constructor_args(args: bytes):
-    """تحليل معاملات المُنشئ (البحث عن سلاسل نصية وكتل عالية الإنتروبيا)"""
+    """تحليل معاملات المُنشئ"""
     findings = []
     if not args:
         return findings
 
-    # فحص الإنتروبيا الكلية
     h_total = shannon_entropy(args)
     findings.append({
         "type": "constructor_args_raw",
@@ -226,7 +254,6 @@ def analyze_constructor_args(args: bytes):
         "hex": args.hex(),
     })
 
-    # تقسيم إلى كتل 32 بايت للفحص
     for i in range(0, len(args), 32):
         chunk = args[i:i + 32]
         if len(chunk) < 8:
@@ -240,7 +267,6 @@ def analyze_constructor_args(args: bytes):
                 "entropy": round(h, 4),
                 "hex_preview": chunk[:16].hex() + "...",
             })
-        # اكتشاف السلاسل النصية
         if is_printable_ascii(chunk):
             findings.append({
                 "type": "constructor_arg_string",
@@ -258,10 +284,10 @@ def main():
         description="EVM Bytecode Forensics - تحليل العقود المنشورة، واستخراج معاملات المُنشئ والبيانات المشبوهة"
     )
     parser.add_argument("address", help="عنوان العقد")
-    parser.add_argument("--chain", default="ethereum", choices=list(RPC_ENDPOINTS.keys()), help="السلسلة (افتراضي: ethereum)")
-    parser.add_argument("--etherscan-key", help="مفتاح Etherscan API (مطلوب لجلب creation bytecode)", default=None)
+    parser.add_argument("--chain", default="ethereum", choices=list(RPC_ENDPOINTS.keys()))
+    parser.add_argument("--etherscan-key", help="مفتاح Etherscan API", default=None)
     parser.add_argument("--json", action="store_true", help="إخراج JSON")
-    parser.add_argument("--no-constructor", action="store_true", help="تخطي تحليل معاملات المُنشئ (عندما لا يتوفر مفتاح API)")
+    parser.add_argument("--no-constructor", action="store_true", help="تخطي تحليل معاملات المُنشئ")
 
     args = parser.parse_args()
 
@@ -281,7 +307,7 @@ def main():
     runtime_findings = analyze_runtime(runtime, source="runtime")
     all_findings.extend(runtime_findings)
 
-    # 3. جلب creation bytecode وتحليل معاملات المُنشئ
+    # 3. تحليل creation bytecode
     if not args.no_constructor:
         print("\n[*] محاولة جلب creation bytecode...")
         creation = fetch_creation_bytecode(args.address, args.chain, args.etherscan_key)
@@ -292,9 +318,9 @@ def main():
                 args_findings = analyze_constructor_args(constructor_args)
                 all_findings.extend(args_findings)
             else:
-                print("[*] لم يتم اكتشاف معاملات مُنشئ إضافية (قد لا تكون هناك معاملات، أو فشلت المطابقة)")
+                print("[*] لم يتم اكتشاف معاملات مُنشئ إضافية")
         else:
-            print("[!] تخطي تحليل معاملات المُنشئ (لا يمكن جلب creation bytecode)")
+            print("[!] تخطي تحليل معاملات المُنشئ")
 
     # 4. الإخراج
     print("\n" + "=" * 60)
@@ -317,7 +343,7 @@ def main():
     print("\n" + "-" * 60)
     print(f"إجمالي الاكتشافات: {len(all_findings)}")
     if any(f["type"] == "constructor_args_raw" for f in all_findings):
-        print("[!] تم اكتشاف معاملات مُنشئ محتملة، يُرجى التحقق يدويًا مما إذا كانت تحتوي على بيانات حساسة")
+        print("[!] تم اكتشاف معاملات مُنشئ محتملة، يُرجى التحقق يدويًا")
     if any(f["type"] == "high_entropy" for f in all_findings):
         print("[!] تم اكتشاف كتل عالية الإنتروبيا في runtime، يُرجى التحقق يدويًا")
 
